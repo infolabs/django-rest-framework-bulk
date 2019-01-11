@@ -1,8 +1,12 @@
 from __future__ import print_function, unicode_literals
 import inspect
 
+from django.core.exceptions import ObjectDoesNotExist
+
 from rest_framework.exceptions import ValidationError
 from rest_framework.serializers import ListSerializer
+from rest_framework.settings import api_settings
+from rest_framework.utils import html
 
 
 __all__ = [
@@ -37,7 +41,6 @@ class BulkListSerializer(ListSerializer):
 
     def update(self, queryset, all_validated_data):
         id_attr = getattr(self.child.Meta, 'update_lookup_field', 'id')
-
         all_validated_data_by_id = {
             i.pop(id_attr): i
             for i in all_validated_data
@@ -59,6 +62,7 @@ class BulkListSerializer(ListSerializer):
 
         updated_objects = []
 
+        self.validate_bulk_update(objects_to_update)
         for obj in objects_to_update:
             obj_id = getattr(obj, id_attr)
             obj_validated_data = all_validated_data_by_id.get(obj_id)
@@ -68,3 +72,52 @@ class BulkListSerializer(ListSerializer):
             updated_objects.append(self.child.update(obj, obj_validated_data))
 
         return updated_objects
+
+    def validate_bulk_update(self, objects):
+        """
+        Hook to ensure that the bulk update should be allowed.
+        """
+        pass
+
+    def to_internal_value(self, data):
+        """
+        List of dicts of native values <- List of dicts of primitive datatypes.
+        """
+        if html.is_html_input(data):
+            data = html.parse_html_list(data)
+
+        if not isinstance(data, list):
+            message = self.error_messages['not_a_list'].format(
+                input_type=type(data).__name__
+            )
+            raise ValidationError({
+                api_settings.NON_FIELD_ERRORS_KEY: [message]
+            })
+
+        if not self.allow_empty and len(data) == 0:
+            message = self.error_messages['empty']
+            raise ValidationError({
+                api_settings.NON_FIELD_ERRORS_KEY: [message]
+            })
+
+        ret = []
+        errors = []
+
+        for item in data:
+            try:
+                # Code that was inserted
+                self.child.instance = self.instance.get(id=item['id']) if self.instance else None
+                self.child.initial_data = item
+                # Until here
+                validated = self.child.run_validation(item)
+            except ValidationError as exc:
+                errors.append(exc.detail)
+            except ObjectDoesNotExist:
+                errors.append('Object matching query does not exist.')
+            else:
+                ret.append(validated)
+                errors.append({})
+        if any(errors):
+            raise ValidationError(errors)
+
+        return ret

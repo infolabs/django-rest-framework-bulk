@@ -5,10 +5,11 @@ from rest_framework.routers import DefaultRouter, SimpleRouter
 
 __all__ = [
     'BulkRouter',
+    'BulkRouterMixin',
 ]
 
 
-class BulkRouter(DefaultRouter):
+class BulkRouterMixin(object):
     """
     Map http methods to actions defined on the bulk mixins.
     """
@@ -18,3 +19,7 @@ class BulkRouter(DefaultRouter):
         'patch': 'partial_bulk_update',
         'delete': 'bulk_destroy',
     })
+
+
+class BulkRouter(BulkRouterMixin, DefaultRouter):
+    pass

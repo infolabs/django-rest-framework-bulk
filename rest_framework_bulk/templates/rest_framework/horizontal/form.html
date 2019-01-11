@@ -1,0 +1,10 @@
+{% load rest_framework rest_framework_bulk_tags %}
+{# /template/rest_framework/horizontal/form.html Fix "TypeError: iter() returned non-iterator of type 'ListSerializer"' #}
+
+{% if form|is_list %}
+    {% for field in form %}
+      {% if not field.read_only %}
+        {% render_field field style=style %}
+      {% endif %}
+    {% endfor %}
+{% endif %}

@@ -1,6 +1,7 @@
 from __future__ import print_function, unicode_literals
 import inspect
 
+from django.utils.translation import ugettext_lazy as _
 from django.core.exceptions import ObjectDoesNotExist
 
 from rest_framework.exceptions import ValidationError
@@ -112,8 +113,8 @@ class BulkListSerializer(ListSerializer):
                 validated = self.child.run_validation(item)
             except ValidationError as exc:
                 errors.append(exc.detail)
-            except ObjectDoesNotExist:
-                errors.append('Object matching query does not exist.')
+            except (ObjectDoesNotExist, KeyError):
+                errors.append(_('Object matching query does not exist.'))
             else:
                 ret.append(validated)
                 errors.append({})

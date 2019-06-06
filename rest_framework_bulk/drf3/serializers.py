@@ -55,7 +55,6 @@ class BulkListSerializer(BaseBulkSerializerMixin, ListSerializer):
 
     def update(self, queryset, all_validated_data):
         id_attrs = self.get_id_attrs()
-
         y = len(id_attrs)
         all_validated_data_by_ids = {}
         for x, id_attr in enumerate(id_attrs):
@@ -73,7 +72,7 @@ class BulkListSerializer(BaseBulkSerializerMixin, ListSerializer):
                     j -= 1
             all_validated_data = data
         if all_validated_data:
-            raise ValidationError('')
+            raise ValidationError(_('Lookup field not found.'))
 
         # since this method is given a queryset which can have many
         # model instances, first find all objects to update
@@ -138,27 +137,24 @@ class BulkListSerializer(BaseBulkSerializerMixin, ListSerializer):
         errors = []
         id_attrs = self.get_id_attrs()
         for item in data:
+            error = {}
             for id_attr in id_attrs:
                 if id_attr in item:
                     try:
-                        # Code that was inserted
                         self.child.instance = self.instance.get(**{id_attr: item[id_attr]}) if self.instance else None
-                        # Until here
-                        validated = self.child.run_validation(item)
-                    except ValidationError as exc:
-                        errors.append(exc.detail)
                     except (ObjectDoesNotExist, MultipleObjectsReturned) as e:
-                        errors.append(str(e))
-                    else:
-                        result.append(validated)
-                        errors.append({})
+                        error.update({id_attr: [str(e)]})
                     break
-
-            else:
-                errors.append(_('Lookup field not found.'))
+            if not error:
+                try:
+                    validated = self.child.run_validation(item)
+                except ValidationError as exc:
+                    error = exc.detail
+                else:
+                    result.append(validated)
+            errors.append(error)
 
         if any(errors):
             del self.initial_data
             raise ValidationError(errors)
-
         return result

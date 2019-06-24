@@ -133,6 +133,9 @@ class BulkListSerializer(BaseBulkSerializerMixin, ListSerializer):
                 api_settings.NON_FIELD_ERRORS_KEY: [message]
             })
 
+        # Clear fields cache - rest_framework.serializers.Serializer#fields
+        self.child.__dict__.pop('_fields', None)
+
         result = []
         errors = []
         id_attrs = self.get_id_attrs()
@@ -147,6 +150,7 @@ class BulkListSerializer(BaseBulkSerializerMixin, ListSerializer):
                     break
             if not error:
                 try:
+                    # Do validation
                     validated = self.child.run_validation(item)
                 except ValidationError as exc:
                     error = exc.detail

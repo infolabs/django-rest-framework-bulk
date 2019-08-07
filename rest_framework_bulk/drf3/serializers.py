@@ -30,6 +30,12 @@ class BulkSerializerMixin(BaseBulkSerializerMixin):
     def get_id_attrs(self):
         return getattr(self.Meta, 'lookup_fields', ('id',))
 
+    def need_add_lookup_fields_request_methods(self):
+        # POST used for 'create or update' technique
+        return ('PUT', 'PATCH', 'POST') if getattr(
+            self.Meta, 'need_add_lookup_fields_request_methods', False
+        ) else ('PUT', 'PATCH')
+
     def to_internal_value(self, data):
         result = super(BulkSerializerMixin, self).to_internal_value(data)
         id_attrs = self.get_id_attrs()
@@ -38,7 +44,7 @@ class BulkSerializerMixin(BaseBulkSerializerMixin):
         # add lookup_field field back to validated data
         # since super by default strips out read-only fields
         # hence id will no longer be present in validated_data
-        if isinstance(self.root, BulkListSerializer) and request_method in ('PUT', 'PATCH'):
+        if isinstance(self.root, BulkListSerializer) and request_method in self.need_add_lookup_fields_request_methods():
             for id_attr in id_attrs:
                 id_field = self.fields[id_attr]
                 id_value = id_field.get_value(data)

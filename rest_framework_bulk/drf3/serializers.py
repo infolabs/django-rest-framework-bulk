@@ -1,14 +1,12 @@
 from __future__ import print_function, unicode_literals
 
-from django.utils.translation import ugettext_lazy as _
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
-
+from django.utils.translation import ugettext_lazy as _
 from rest_framework.exceptions import ValidationError
+from rest_framework.fields import empty
 from rest_framework.serializers import ListSerializer
 from rest_framework.settings import api_settings
 from rest_framework.utils import html
-from rest_framework.fields import empty
-
 
 __all__ = [
     'BulkListSerializer',
@@ -86,7 +84,10 @@ class BulkListSerializer(BaseBulkSerializerMixin, ListSerializer):
         objects_to_update_by_ids = {}
         all_objects_to_update = []
         for id_attr in id_attrs:
-            validated_data_by_id_keys = all_validated_data_by_ids[id_attr].keys()
+
+            validated_data = all_validated_data_by_ids[id_attr]
+
+            validated_data_by_id_keys = validated_data.keys()
             if validated_data_by_id_keys:
                 objects_to_update = queryset.filter(**{
                     '{}__in'.format(id_attr): validated_data_by_id_keys,
@@ -97,15 +98,21 @@ class BulkListSerializer(BaseBulkSerializerMixin, ListSerializer):
                 all_objects_to_update.extend(objects_to_update)
             else:
                 objects_to_update = []
+            for obj in objects_to_update:
+                obj_id = getattr(obj, id_attr)
+                if validated_data.get(obj_id, empty) == empty:
+                    raise ValidationError(
+                        _("Wrong type of lookup field `{}`, expected '{}'.").format(id_attr, type(obj_id).__name__))
             objects_to_update_by_ids[id_attr] = objects_to_update
 
         self.validate_bulk_update(all_objects_to_update)
 
         updated_objects = []
         for id_attr in id_attrs:
+            validated_data = all_validated_data_by_ids[id_attr]
             for obj in objects_to_update_by_ids[id_attr]:
                 obj_id = getattr(obj, id_attr)
-                obj_validated_data = all_validated_data_by_ids[id_attr].get(obj_id)
+                obj_validated_data = validated_data.get(obj_id)
                 # use model serializer to actually update the model
                 # in case that method is overwritten
                 updated_objects.append(self.child.update(obj, obj_validated_data))

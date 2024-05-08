@@ -10,6 +10,7 @@ register = template.Library()
 
 
 def is_list(value):
-    return isinstance(value, collections.Iterable)
+    Iterable = getattr(collections, 'Iterable', collections.abc.Iterable)
+    return isinstance(value, Iterable)
 
 register.filter(is_list, is_safe=True)

@@ -1,4 +1,7 @@
-include *.rst *.txt
+include *.rst *.txt pyproject.toml pytest.ini
 recursive-include tests *.sh *.py
+recursive-include rest_framework_bulk/tests *.py
+recursive-include rest_framework_bulk/templates *.html
 recursive-exclude * __pycache__
 recursive-exclude * *.py[co]
+global-exclude *.dshclaim .dsh-file-claim.audit.jsonl .dsh-file-claim.lock

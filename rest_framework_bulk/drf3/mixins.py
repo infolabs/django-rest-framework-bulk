@@ -1,35 +1,27 @@
-from __future__ import print_function, unicode_literals
+from django.core.exceptions import ImproperlyConfigured
+from django.db import transaction
 from rest_framework import status
 from rest_framework.mixins import CreateModelMixin
 from rest_framework.response import Response
 
+from ..transactions import bulk_atomic, check_instance_database, write_database
 
-__all__ = [
-    'BulkCreateModelMixin',
-    'BulkDestroyModelMixin',
-    'BulkUpdateModelMixin',
-]
+__all__ = ['BulkCreateModelMixin', 'BulkDestroyModelMixin', 'BulkUpdateModelMixin']
 
 
 class BulkCreateModelMixin(CreateModelMixin):
-    """
-    Either create a single or many model instances in bulk by using the
-    Serializers ``many=True`` ability from Django REST >= 2.2.5.
-
-    .. note::
-        This mixin uses the same method to create model instances
-        as ``CreateModelMixin`` because both non-bulk and bulk
-        requests will use ``POST`` request method.
-    """
-
     def create(self, request, *args, **kwargs):
-        bulk = isinstance(request.data, list)
-
-        if not bulk:
-            return super(BulkCreateModelMixin, self).create(request, *args, **kwargs)
-
-        else:
-            serializer = self.get_serializer(data=request.data, many=True)
+        if not isinstance(request.data, list):
+            return super().create(request, *args, **kwargs)
+        serializer = self.get_serializer(data=request.data, many=True)
+        queryset = self.get_queryset()
+        alias = write_database(queryset, serializer)
+        # Include custom perform_* hooks and materialization in the unit. A
+        # serializer representation failure must not leave a committed write.
+        with bulk_atomic(alias):
+            require_policy = getattr(serializer, '_require_create_policy', None)
+            if require_policy is not None:
+                require_policy()  # Refuse legacy upsert before its validators.
             serializer.is_valid(raise_exception=True)
             self.perform_bulk_create(serializer)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -38,41 +30,27 @@ class BulkCreateModelMixin(CreateModelMixin):
         return self.perform_create(serializer)
 
 
-class BulkUpdateModelMixin(object):
-    """
-    Update model instances in bulk by using the Serializers
-    ``many=True`` ability from Django REST >= 2.2.5.
-    """
-
+class BulkUpdateModelMixin:
     def get_object(self):
-        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
-
-        if lookup_url_kwarg in self.kwargs:
-            return super(BulkUpdateModelMixin, self).get_object()
-
-        # If the lookup_url_kwarg is not present
-        # get_object() is most likely called as part of options()
-        # which by default simply checks for object permissions
-        # and raises permission denied if necessary.
-        # Here we don't need to check for general permissions
-        # and can simply return None since general permissions
-        # are checked in initial() which always gets executed
-        # before any of the API actions (e.g. create, update, etc)
-        return
+        lookup = self.lookup_url_kwarg or self.lookup_field
+        if lookup in self.kwargs:
+            return super().get_object()
+        # OPTIONS on the collection has no individual object. View-level
+        # permission checks still run in APIView.initial().
+        return None
 
     def bulk_update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
-
-        # restrict the update to the filtered queryset
-        serializer = self.get_serializer(
-            self.filter_queryset(self.get_queryset()),
-            data=request.data,
-            many=True,
-            partial=partial,
-        )
-        serializer.is_valid(raise_exception=True)
-        self.perform_bulk_update(serializer)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        queryset = self.get_queryset()
+        alias = write_database(queryset)
+        with bulk_atomic(alias):
+            scoped = self.filter_queryset(queryset.using(alias))
+            if write_database(scoped) != alias:
+                raise ImproperlyConfigured('Bulk filter changed the write database.')
+            serializer = self.get_serializer(scoped, data=request.data, many=True, partial=partial)
+            serializer.is_valid(raise_exception=True)
+            self.perform_bulk_update(serializer)
+            return Response(serializer.data, status=status.HTTP_200_OK)
 
     def partial_bulk_update(self, request, *args, **kwargs):
         kwargs['partial'] = True
@@ -85,32 +63,38 @@ class BulkUpdateModelMixin(object):
         return self.perform_update(serializer)
 
 
-class BulkDestroyModelMixin(object):
-    """
-    Destroy model instances.
-    """
-
+class BulkDestroyModelMixin:
     def allow_bulk_destroy(self, qs, filtered):
-        """
-        Hook to ensure that the bulk destroy should be allowed.
-
-        By default this checks that the destroy is only applied to
-        filtered querysets.
-        """
-        return qs is not filtered
+        """Explicit consumer opt-in is required; queryset identity is not auth."""
+        return False
 
     def bulk_destroy(self, request, *args, **kwargs):
-        qs = self.get_queryset()
-
-        filtered = self.filter_queryset(qs)
-        if not self.allow_bulk_destroy(qs, filtered):
-            return Response(status=status.HTTP_400_BAD_REQUEST)
-
-        self.perform_bulk_destroy(filtered)
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        queryset = self.get_queryset()
+        alias = write_database(queryset)
+        with bulk_atomic(alias):
+            qs = queryset.using(alias)
+            filtered = self.filter_queryset(qs)
+            if write_database(filtered) != alias:
+                raise ImproperlyConfigured('Bulk filter changed the write database.')
+            if not self.allow_bulk_destroy(qs, filtered):
+                transaction.set_rollback(True, using=alias)
+                return Response(status=status.HTTP_400_BAD_REQUEST)
+            # Check every target before any delete (including custom hooks).
+            objects = []
+            seen = set()
+            for obj in filtered.select_for_update():
+                check_instance_database(obj, alias)
+                key = (obj._meta.concrete_model, obj.pk)
+                if key not in seen:
+                    seen.add(key)
+                    objects.append(obj)
+            for obj in objects:
+                self.check_object_permissions(request, obj)
+            self.perform_bulk_destroy(objects)
+            return Response(status=status.HTTP_204_NO_CONTENT)
 
     def perform_destroy(self, instance):
+        # Preserve consumer delete() overrides which may not accept using=.
         instance.delete()
 
     def perform_bulk_destroy(self, objects):

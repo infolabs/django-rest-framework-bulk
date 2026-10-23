@@ -3,6 +3,18 @@
 History
 -------
 
+0.3.0a1 (unreleased)
+~~~~~~~~~~~~~~~~~~~
+
+* InfLabs candidate for Python 3.12, Django 5.2 and DRF 3.18.
+* Preserve ordered lookup fields, POST lookup retention and EDW validation hook.
+* Validate lookup types, scope per-item validation, reject duplicate targets.
+* Atomic bulk ORM units with per-object update/delete permissions; reject
+  second-alias execute/executemany in the current synchronous context.
+* Bulk delete is disabled unless the consumer explicitly overrides its policy.
+* Lazy public exports and build metadata without Django imports; modern tests.
+* Older Django/DRF 2 runtimes are not supported by this candidate.
+
 0.2.1 (2015-04-26)
 ~~~~~~~~~~~~~~~~~~
 

@@ -19,7 +19,14 @@ class FilteredBulkAPIView(SimpleMixin, generics.ListBulkCreateUpdateDestroyAPIVi
     def filter_queryset(self, queryset):
         return queryset.filter(number__gt=5)
 
+    def allow_bulk_destroy(self, qs, filtered):
+        # Explicit policy for this synthetic legacy regression fixture only.
+        return True
+
 
 class SimpleViewSet(SimpleMixin, generics.BulkModelViewSet):
     def filter_queryset(self, queryset):
         return queryset.filter(number__gt=5)
+
+    def allow_bulk_destroy(self, qs, filtered):
+        return True

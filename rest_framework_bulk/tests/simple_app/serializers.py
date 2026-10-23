@@ -9,5 +9,6 @@ class SimpleSerializer(BulkSerializerMixin,  # only required in DRF3
                        ModelSerializer):
     class Meta(object):
         model = SimpleModel
+        fields = '__all__'
         # only required in DRF3
         list_serializer_class = BulkListSerializer

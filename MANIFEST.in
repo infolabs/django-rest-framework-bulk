@@ -1,4 +1,4 @@
-include *.rst *.txt pyproject.toml pytest.ini
+include *.rst *.txt pyproject.toml pytest.ini Makefile
 recursive-include tests *.sh *.py
 recursive-include rest_framework_bulk/tests *.py
 recursive-include rest_framework_bulk/templates *.html

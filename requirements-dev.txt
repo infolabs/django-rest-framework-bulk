@@ -1,4 +1,4 @@
--r requirements.txt
-coverage
-flake8
-tox
+-r requirements-test.txt
+build==1.4.0
+setuptools==84.2.1
+wheel==0.48.0

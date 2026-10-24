@@ -1,8 +1,8 @@
 from __future__ import unicode_literals, print_function
 import json
 
-from django.core.urlresolvers import reverse
-from django.test import TestCase
+from django.urls import reverse
+from django.test import TestCase, override_settings
 from django.test.client import RequestFactory
 from rest_framework import status
 
@@ -159,6 +159,7 @@ class TestBulkAPIView(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
+@override_settings(ROOT_URLCONF='rest_framework_bulk.tests.simple_app.urls')
 class TestBulkAPIViewSet(TestCase):
     """
     Integration class testing that viewset requests are correctly

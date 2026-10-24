@@ -1,53 +1,32 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-from __future__ import unicode_literals
-import os
+"""Setuptools entry point; metadata must not import Django or package code."""
+import re
+from pathlib import Path
+
 from setuptools import find_packages, setup
 
-from rest_framework_bulk import __version__, __author__
-
-
-def read(fname):
-    return (open(os.path.join(os.path.dirname(__file__), fname), 'rb')
-            .read().decode('utf-8'))
-
-
-authors = read('AUTHORS.rst')
-history = read('HISTORY.rst').replace('.. :changelog:', '')
-licence = read('LICENSE.rst')
-readme = read('README.rst')
-
-requirements = read('requirements.txt').splitlines() + [
-    'setuptools',
-]
-
-test_requirements = (
-    read('requirements.txt').splitlines()
-    + read('requirements-dev.txt').splitlines()[1:]
-)
+ROOT = Path(__file__).resolve().parent
+version = re.search(r"^__version__ = '([^']+)'", (ROOT / 'rest_framework_bulk/_version.py').read_text(), re.M).group(1)
 
 setup(
     name='djangorestframework-bulk',
-    version=__version__,
-    author=__author__,
+    version=version,
+    author='Miroslav Shubernetskiy',
     author_email='miroslav@miki725.com',
-    description='Django REST Framework bulk CRUD view mixins',
-    long_description='\n\n'.join([readme, history, authors, licence]),
-    url='https://github.com/miki725/django-rest-framework-bulk',
+    description='Django REST Framework bulk CRUD view mixins (InfLabs)',
+    long_description=(ROOT / 'README.rst').read_text(encoding='utf-8'),
+    long_description_content_type='text/x-rst',
+    url='https://github.com/infolabs/django-rest-framework-bulk',
     license='MIT',
-    keywords='django',
-    packages=find_packages(),
-    install_requires=requirements,
-    tests_require=test_requirements,
+    python_requires='>=3.12',
+    packages=find_packages(include=['rest_framework_bulk', 'rest_framework_bulk.*'],
+        exclude=['rest_framework_bulk.tests', 'rest_framework_bulk.tests.*', 'rest_framework_bulk.drf2', 'rest_framework_bulk.drf2.*']),
+    package_data={'rest_framework_bulk': ['templates/rest_framework/horizontal/*.html']},
+    install_requires=['Django>=5.2,<5.3', 'djangorestframework>=3.18,<3.19'],
     classifiers=[
         'Development Status :: 3 - Alpha',
-        'Framework :: Django',
+        'Framework :: Django :: 5.2',
         'Intended Audience :: Developers',
-        'Operating System :: OS Independent',
-        'Programming Language :: Python',
         'Programming Language :: Python :: 3',
-        'Topic :: Utilities',
-        'Topic :: Internet :: WWW/HTTP',
-        'License :: OSI Approved :: MIT License',
+        'Programming Language :: Python :: 3.12',
     ],
 )

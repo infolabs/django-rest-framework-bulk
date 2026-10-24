@@ -1,174 +1,219 @@
-from __future__ import print_function, unicode_literals
+from collections.abc import Mapping
+from copy import copy
 
-from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
-from django.utils.translation import ugettext_lazy as _
+from django.core.exceptions import ImproperlyConfigured, MultipleObjectsReturned, ObjectDoesNotExist
+from django.db.models import Model, QuerySet
+from django.utils.translation import gettext_lazy as _
 from rest_framework.exceptions import ValidationError
 from rest_framework.fields import empty
 from rest_framework.serializers import ListSerializer
-from rest_framework.settings import api_settings
-from rest_framework.utils import html
 
-__all__ = [
-    'BulkListSerializer',
-    'BulkSerializerMixin',
-]
+from ..transactions import bulk_atomic, check_instance_database, write_database
+
+__all__ = ['BulkListSerializer', 'BulkSerializerMixin']
 
 
-# import inspect
-class BaseBulkSerializerMixin(object):
+def _lookup_fields(serializer):
+    meta = getattr(serializer, 'Meta', None)
+    return getattr(meta, 'lookup_fields', (getattr(meta, 'update_lookup_field', 'id'),))
 
+
+def _lookup(serializer, data, names, *, validated=False):
+    """Select the first supplied lookup, preserving the InfLabs ordered API."""
+    for name in names:
+        if name not in data or data[name] is empty:
+            continue
+        value = data[name]
+        if value is None or isinstance(value, (bool, list, tuple, dict, set)):
+            raise ValidationError(_('Invalid lookup value.'), code='invalid_lookup')
+        field = serializer.fields.get(name)
+        if field is None or field.source not in (None, name):
+            raise ImproperlyConfigured('Bulk lookup fields must name direct serializer/model fields.')
+        # Read-only normally short-circuits run_validation(). A temporary
+        # shallow copy keeps custom run_validation/validators while enabling
+        # typed input validation; never mutate the serializer's real field.
+        if validated:
+            # update() receives native validated_data, not wire input. Custom
+            # field conversion need not be idempotent on its native result.
+            pass
+        elif field.read_only:
+            writable = copy(field)
+            writable.read_only = False
+            value = writable.run_validation(value)
+        else:
+            # Unique validators need child.instance resolved first and run in
+            # normal child validation, not while locating the target.
+            value = field.to_internal_value(value)
+        if value is None or value is empty or isinstance(value, bool):
+            raise ValidationError(_('Invalid lookup value.'), code='invalid_lookup')
+        try:
+            hash(value)
+        except TypeError:
+            raise ValidationError(_('Invalid lookup value.'), code='invalid_lookup') from None
+        return name, value
+    raise ValidationError(_('Lookup field not found.'), code='missing_lookup')
+
+
+def _target(queryset, name, value):
+    try:
+        return queryset.get(**{name: value})
+    except (ObjectDoesNotExist, MultipleObjectsReturned, TypeError, ValueError, OverflowError):
+        # Do not reveal whether a target exists outside the caller's queryset.
+        raise ValidationError(_('Could not resolve a unique bulk target.'), code='invalid_target') from None
+
+
+class BaseBulkSerializerMixin:
     @staticmethod
     def is_empty(value):
-        # return not(bool(value) and not inspect.isclass(value) or value == 0)
-        return value == empty
+        return value is empty
 
 
 class BulkSerializerMixin(BaseBulkSerializerMixin):
-
     def get_id_attrs(self):
-        return getattr(self.Meta, 'lookup_fields', ('id',))
+        return _lookup_fields(self)
 
     def need_add_lookup_fields_request_methods(self):
-        # POST used for 'create or update' technique
-        return ('PUT', 'PATCH', 'POST') if getattr(
-            self.Meta, 'need_add_lookup_fields_request_methods', False
-        ) else ('PUT', 'PATCH')
+        if getattr(self.Meta, 'need_add_lookup_fields_request_methods', False):
+            return ('PUT', 'PATCH', 'POST')
+        return ('PUT', 'PATCH')
 
     def to_internal_value(self, data):
-        result = super(BulkSerializerMixin, self).to_internal_value(data)
-        id_attrs = self.get_id_attrs()
-        request_method = getattr(getattr(self.context.get('view'), 'request'), 'method', '')
-
-        # add lookup_field field back to validated data
-        # since super by default strips out read-only fields
-        # hence id will no longer be present in validated_data
-        if isinstance(self.root, BulkListSerializer) and request_method in self.need_add_lookup_fields_request_methods():
-            for id_attr in id_attrs:
-                id_field = self.fields[id_attr]
-                id_value = id_field.get_value(data)
-                if not self.is_empty(id_value):
-                    result[id_attr] = id_value
-                    break
+        result = super().to_internal_value(data)
+        view = self.context.get('view')
+        request = getattr(view, 'request', None) or self.context.get('request')
+        method = getattr(request, 'method', '')
+        if isinstance(self.root, BulkListSerializer) and method in self.need_add_lookup_fields_request_methods():
+            # POST remains a consumer-owned create/upsert policy; its lookup is
+            # optional. PUT/PATCH must identify an existing scoped object.
+            supplied = any(name in data for name in self.get_id_attrs())
+            if method != 'POST' or supplied:
+                name, value = _lookup(self, data, self.get_id_attrs())
+                result[name] = value
         return result
 
 
 class BulkListSerializer(BaseBulkSerializerMixin, ListSerializer):
-
     def get_id_attrs(self):
-        return getattr(self.child.Meta, 'lookup_fields', ('id',))
+        return _lookup_fields(self.child)
 
-    def update(self, queryset, all_validated_data):
-        id_attrs = self.get_id_attrs()
-        y = len(id_attrs)
-        all_validated_data_by_ids = {}
-        for x, id_attr in enumerate(id_attrs):
-            validated_data_by_id = all_validated_data_by_ids[id_attr] = {}
-            data = all_validated_data[:]
-            j = 0
-            for i, obj in enumerate(all_validated_data):
-                value = obj.pop(id_attr, empty)
-                if not self.is_empty(value):
-                    for k in [id_attrs[z] for z in range(x + 1, y)]:
-                        if k in obj and self.is_empty(obj[k]):
-                            del obj[k]
-                    validated_data_by_id[value] = obj
-                    del data[i + j]
-                    j -= 1
-            all_validated_data = data
-        if all_validated_data:
-            raise ValidationError(_('Lookup field not found.'))
-
-        # since this method is given a queryset which can have many
-        # model instances, first find all objects to update
-        # and only then update the models
-        objects_to_update_by_ids = {}
-        all_objects_to_update = []
-        for id_attr in id_attrs:
-
-            validated_data = all_validated_data_by_ids[id_attr]
-
-            validated_data_by_id_keys = validated_data.keys()
-            if validated_data_by_id_keys:
-                objects_to_update = queryset.filter(**{
-                    '{}__in'.format(id_attr): validated_data_by_id_keys,
-                })
-                if len(validated_data_by_id_keys) != objects_to_update.count():
-                    raise ValidationError(_('Could not find all objects to update.'))
-                objects_to_update = list(objects_to_update)
-                all_objects_to_update.extend(objects_to_update)
-            else:
-                objects_to_update = []
-            for obj in objects_to_update:
-                obj_id = getattr(obj, id_attr)
-                if validated_data.get(obj_id, empty) == empty:
-                    raise ValidationError(
-                        _("Wrong type of lookup field `{}`, expected '{}'.").format(id_attr, type(obj_id).__name__))
-            objects_to_update_by_ids[id_attr] = objects_to_update
-
-        self.validate_bulk_update(all_objects_to_update)
-
-        updated_objects = []
-        for id_attr in id_attrs:
-            validated_data = all_validated_data_by_ids[id_attr]
-            for obj in objects_to_update_by_ids[id_attr]:
-                obj_id = getattr(obj, id_attr)
-                obj_validated_data = validated_data.get(obj_id)
-                # use model serializer to actually update the model
-                # in case that method is overwritten
-                updated_objects.append(self.child.update(obj, obj_validated_data))
-
-        return updated_objects
-
-    def validate_bulk_update(self, objects):
-        """
-        Hook to ensure that the bulk update should be allowed.
-        """
-        pass
+    def _queryset(self, instance):
+        if not isinstance(instance, QuerySet):
+            raise ImproperlyConfigured('Bulk update requires a scoped Django QuerySet.')
+        model = getattr(getattr(self.child, 'Meta', None), 'model', None)
+        if isinstance(model, type) and issubclass(model, Model):
+            qs_model = instance.model
+            if not (issubclass(qs_model, model) or qs_model._meta.concrete_model is model._meta.concrete_model):
+                raise ImproperlyConfigured('Bulk queryset model does not match the child serializer model.')
+        alias = write_database(instance, self)
+        return instance.using(alias), alias
 
     def to_internal_value(self, data):
+        self._validated_targets = {}
+        return super().to_internal_value(data)
+
+    def run_child_validation(self, data):
+        old_instance = getattr(self.child, 'instance', None)
+        old_initial = getattr(self.child, 'initial_data', empty)
+        try:
+            self.child.instance = None
+            self.child.initial_data = data
+            if self.instance is not None and isinstance(data, Mapping):
+                queryset, alias = self._queryset(self.instance)
+                name, value = _lookup(self.child, data, self.get_id_attrs())
+                with bulk_atomic(alias):
+                    # Collection views hold an outer bulk transaction across
+                    # validation+save. Lock before validators observe the row.
+                    obj = _target(queryset.select_for_update(), name, value)
+                    check_instance_database(obj, alias)
+                    view = self.context.get('view')
+                    if view is not None:
+                        # Like DRF get_object(), authorize before state-aware
+                        # validators can disclose details about this object.
+                        view.check_object_permissions(view.request, obj)
+                    self.child.instance = obj
+                    validated = super().run_child_validation(data)
+                    self._validated_targets[(name, value)] = (alias, obj._meta.concrete_model, obj.pk)
+                    return validated
+            return super().run_child_validation(data)
+        finally:
+            self.child.instance = old_instance
+            if old_initial is empty:
+                self.child.__dict__.pop('initial_data', None)
+            else:
+                self.child.initial_data = old_initial
+
+    def _require_create_policy(self):
+        if (getattr(getattr(self.child, 'Meta', None), 'need_add_lookup_fields_request_methods', False)
+                and type(self).validate_bulk_create is BulkListSerializer.validate_bulk_create):
+            raise ImproperlyConfigured('POST lookup retention requires an explicit validate_bulk_create policy.')
+
+    def create(self, validated_data):
+        self._require_create_policy()
+        alias = write_database(serializer=self)
+        # ListSerializer's default loop is not atomic. Preserve child.create
+        # and opt-in consumer upsert hooks, never silently invent an upsert.
+        with bulk_atomic(alias):
+            self.validate_bulk_create(validated_data)
+            created = []
+            old_instance = getattr(self.child, 'instance', None)
+            try:
+                for attrs in validated_data:
+                    self.child.instance = None
+                    created.append(self.child.create(attrs))
+            finally:
+                self.child.instance = old_instance
+            return created
+
+    def validate_bulk_create(self, validated_data):
+        """Preflight for consumer-owned POST upsert, before the first write.
+
+        Lookup retention does not authorize a global child.create() upsert.
+        Consumers enabling it must explicitly override this hook with their
+        scoped lookup, object-permission and new-object admission policy.
         """
-        List of dicts of native values <- List of dicts of primitive datatypes.
-        """
-        if html.is_html_input(data):
-            data = html.parse_html_list(data)
+        if getattr(getattr(self.child, 'Meta', None), 'need_add_lookup_fields_request_methods', False):
+            raise ImproperlyConfigured('POST lookup retention requires an explicit validate_bulk_create policy.')
 
-        if not isinstance(data, list):
-            message = self.error_messages['not_a_list'].format(
-                input_type=type(data).__name__
-            )
-            raise ValidationError({
-                api_settings.NON_FIELD_ERRORS_KEY: [message]
-            })
+    def update(self, queryset, all_validated_data):
+        queryset, alias = self._queryset(queryset)
+        with bulk_atomic(alias):
+            # Lock the write-side rows where the backend supports row locks.
+            queryset = queryset.select_for_update()
+            targets = []
+            seen = set()
+            for attrs in all_validated_data:
+                payload = dict(attrs)  # Do not mutate serializer.validated_data.
+                name, value = _lookup(self.child, payload, self.get_id_attrs(), validated=True)
+                obj = _target(queryset, name, value)
+                check_instance_database(obj, alias)
+                key = (obj._meta.concrete_model, obj.pk)
+                identity = (alias, *key)
+                validated_key = getattr(self, '_validated_targets', {}).get((name, value), identity)
+                if validated_key != identity:
+                    raise ValidationError(_('Bulk target changed after validation.'), code='changed_target')
+                if key in seen:
+                    raise ValidationError(_('Duplicate bulk target.'), code='duplicate_target')
+                seen.add(key)
+                payload.pop(name)
+                targets.append((obj, payload))
 
-        if not self.allow_empty and len(data) == 0:
-            message = self.error_messages['empty']
-            raise ValidationError({
-                api_settings.NON_FIELD_ERRORS_KEY: [message]
-            })
+            objects = [obj for obj, _ in targets]
+            # EDW overrides validate_bulk_update without super(). View-level
+            # object checks must not depend on that override calling us back.
+            view = self.context.get('view')
+            if view is not None:
+                for obj in objects:
+                    view.check_object_permissions(view.request, obj)
+            self.validate_bulk_update(objects)
+            updated = []
+            old_instance = getattr(self.child, 'instance', None)
+            try:
+                for obj, attrs in targets:
+                    self.child.instance = obj
+                    updated.append(self.child.update(obj, attrs))
+            finally:
+                self.child.instance = old_instance
+            return updated
 
-        result = []
-        errors = []
-        id_attrs = self.get_id_attrs()
-        for item in data:
-            error = {}
-            for id_attr in id_attrs:
-                if id_attr in item:
-                    try:
-                        self.child.instance = self.instance.get(**{id_attr: item[id_attr]}) if self.instance else None
-                    except (ObjectDoesNotExist, MultipleObjectsReturned) as e:
-                        error.update({id_attr: [str(e)]})
-                    break
-            if not error:
-                try:
-                    # Do validation
-                    validated = self.child.run_validation(item)
-                except ValidationError as exc:
-                    error = exc.detail
-                else:
-                    result.append(validated)
-            errors.append(error)
-
-        if any(errors):
-            del self.initial_data
-            raise ValidationError(errors)
-        return result
+    def validate_bulk_update(self, objects):
+        """Consumer hook, called for all targets before the first update."""

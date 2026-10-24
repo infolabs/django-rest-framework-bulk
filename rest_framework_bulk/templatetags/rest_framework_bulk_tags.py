@@ -1,16 +1,10 @@
-# -*- coding: utf-8 -*-
-from __future__ import unicode_literals
+from collections.abc import Iterable
 
-
-import collections
 from django import template
-
 
 register = template.Library()
 
 
+@register.filter(is_safe=True)
 def is_list(value):
-    Iterable = getattr(collections, 'Iterable', collections.abc.Iterable)
     return isinstance(value, Iterable)
-
-register.filter(is_list, is_safe=True)

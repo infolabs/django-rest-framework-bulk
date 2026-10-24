@@ -15,3 +15,9 @@ _build/
 *zip
 *tar.gz
 /graft/
+/build/
+/.pytest_cache/
+*.dshclaim
+*.dshpending/
+/.dsh-file-claim.audit.jsonl
+/.dsh-file-claim.lock
